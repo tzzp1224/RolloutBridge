@@ -27,29 +27,42 @@ _TASK_CANDIDATES: tuple[tuple[str, dict[str, Any]], ...] = (
     (
         "arithmetic-grpo-0",
         {
-            "question": "Use the calculator to evaluate (37 * 19) - (144 / 12).",
-            "answer": 691,
+            "question": (
+                "Use the calculator to evaluate (37 * 19) - (144 / 12). Then return the sum "
+                "of the decimal digits of that integer, not the integer itself."
+            ),
+            "answer": 16,
         },
     ),
     (
         "arithmetic-grpo-1",
         {
-            "question": "Use the calculator to evaluate (98765 % 97) * 13 - (444 // 7).",
-            "answer": 184,
+            "question": (
+                "Use the calculator to evaluate (98765 % 97) * 13 - (444 // 7). Then return "
+                "the product of the first and last decimal digits of the resulting integer."
+            ),
+            "answer": 4,
         },
     ),
     (
         "arithmetic-grpo-2",
         {
-            "question": "Use the calculator to evaluate ((83 * 17) - (1440 / 12)) + 29.",
-            "answer": 1320,
+            "question": (
+                "Use the calculator to evaluate ((83 * 17) - (1440 / 12)) + 29. Reverse the "
+                "decimal digits of the resulting integer, drop any leading zero, and return it."
+            ),
+            "answer": 231,
         },
     ),
     (
         "arithmetic-grpo-3",
         {
-            "question": "Use the calculator to evaluate (19 * 23 + 17) / 6.",
-            "answer": 75.66666666666667,
+            "question": (
+                "Use the calculator to evaluate (19 * 23 + 17) / 6. Round the result to the "
+                "nearest whole number, subtract the number of decimal digits in that whole "
+                "number, and return the final value."
+            ),
+            "answer": 74,
         },
     ),
 )
@@ -135,6 +148,10 @@ async def _collect(
 
             specs.append(spec)
             captures.append(capture)
+            print(
+                f"accepted rollout {spec.rollout_id}: reward={capture.result.reward}",
+                file=sys.stderr,
+            )
             rewards = {item.result.reward for item in captures}
             if 0.0 in rewards and 1.0 in rewards:
                 return specs, captures
