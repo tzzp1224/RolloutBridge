@@ -109,7 +109,7 @@ def main() -> None:
             messages=messages,
             tools=tools,
             tool_choice="auto",
-            temperature=1.2,
+            temperature=0.8,
         )
         calls += 1
         if len(response.choices) != 1:

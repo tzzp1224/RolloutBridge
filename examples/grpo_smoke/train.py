@@ -28,41 +28,37 @@ _TASK_CANDIDATES: tuple[tuple[str, dict[str, Any]], ...] = (
         "arithmetic-grpo-0",
         {
             "question": (
-                "Use the calculator to evaluate (37 * 19) - (144 / 12). Then return the sum "
-                "of the decimal digits of that integer, not the integer itself."
+                "Use the calculator to evaluate (37 * 19) - (144 / 12). Return only the last "
+                "decimal digit of the resulting integer, not the full result."
             ),
-            "answer": 16,
+            "answer": 1,
         },
     ),
     (
         "arithmetic-grpo-1",
         {
             "question": (
-                "Use the calculator to evaluate (98765 % 97) * 13 - (444 // 7). Then return "
-                "the product of the first and last decimal digits of the resulting integer."
+                "Use the calculator to evaluate (37 * 19) - (144 / 12). Return only the number "
+                "of decimal digits in the resulting integer, not the integer itself."
             ),
-            "answer": 4,
+            "answer": 3,
         },
     ),
     (
         "arithmetic-grpo-2",
         {
             "question": (
-                "Use the calculator to evaluate ((83 * 17) - (1440 / 12)) + 29. Reverse the "
-                "decimal digits of the resulting integer, drop any leading zero, and return it."
+                "Use the calculator to evaluate (37 * 19) - (144 / 12). Return only the sum of "
+                "the decimal digits of the resulting integer, not the integer itself."
             ),
-            "answer": 231,
+            "answer": 16,
         },
     ),
     (
         "arithmetic-grpo-3",
         {
-            "question": (
-                "Use the calculator to evaluate (19 * 23 + 17) / 6. Round the result to the "
-                "nearest whole number, subtract the number of decimal digits in that whole "
-                "number, and return the final value."
-            ),
-            "answer": 74,
+            "question": "Use the calculator to evaluate (37 * 19) - (144 / 12).",
+            "answer": 691,
         },
     ),
 )
