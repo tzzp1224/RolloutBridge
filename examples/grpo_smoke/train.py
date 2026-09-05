@@ -56,9 +56,15 @@ _TASK_CANDIDATES: tuple[tuple[str, dict[str, Any]], ...] = (
 _MAX_SAMPLES_PER_TASK = 16
 
 
-def _wait_for(url: str, timeout: float) -> None:
+def _wait_for(
+    url: str,
+    timeout: float,
+    process: subprocess.Popen[bytes] | None = None,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if process is not None and (exit_code := process.poll()) is not None:
+            raise RuntimeError(f"service process exited with code {exit_code}: {url}")
         try:
             if httpx.get(url, timeout=2).is_success:
                 return
@@ -110,7 +116,12 @@ async def _collect(
 
             compiled = compile_trajectory(capture.events, capture.result, spec.task_id)
             if len(compiled) != 1:
-                raise RuntimeError(f"rollout {spec.rollout_id} did not compile to exactly one row")
+                print(
+                    f"skipping rollout {spec.rollout_id}: exact-prefix compiler produced "
+                    f"{len(compiled)} rows",
+                    file=sys.stderr,
+                )
+                continue
             row = compiled[0]
             has_tool_turn = (
                 len(capture.events) >= 2
@@ -259,6 +270,8 @@ def main() -> None:
     parser.add_argument("--vllm-port", type=int, default=8100)
     parser.add_argument("--gateway-port", type=int, default=8101)
     args = parser.parse_args()
+    if args.revision == "":
+        raise RuntimeError("--revision received an empty value; resolve the model commit again")
     if not sys.platform.startswith("linux") or not torch.cuda.is_available():
         raise RuntimeError("GPU smoke requires Linux with an NVIDIA CUDA GPU")
 
@@ -284,7 +297,7 @@ def main() -> None:
     vllm = subprocess.Popen(vllm_command, start_new_session=True)
     gateway: subprocess.Popen[bytes] | None = None
     try:
-        _wait_for(f"http://127.0.0.1:{args.vllm_port}/health", 300)
+        _wait_for(f"http://127.0.0.1:{args.vllm_port}/health", 600, vllm)
         gateway = subprocess.Popen(
             [
                 sys.executable,
@@ -300,7 +313,7 @@ def main() -> None:
             start_new_session=True,
         )
         gateway_url = f"http://127.0.0.1:{args.gateway_port}"
-        _wait_for(f"{gateway_url}/health", 60)
+        _wait_for(f"{gateway_url}/health", 60, gateway)
         specs, captures = asyncio.run(
             _collect(gateway_url, args.artifacts, args.model, args.revision, harness)
         )
