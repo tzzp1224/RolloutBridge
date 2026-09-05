@@ -20,8 +20,40 @@ import httpx
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from rolloutbridge import LocalController, RawCapture, RolloutSpec, build_verl_batch
+from rolloutbridge import LocalController, RawCapture, RolloutSpec, TrainingRow, build_verl_batch
 from rolloutbridge.compiler import compile_trajectory
+
+_TASK_CANDIDATES: tuple[tuple[str, dict[str, Any]], ...] = (
+    (
+        "arithmetic-grpo-0",
+        {
+            "question": "Use the calculator to evaluate (37 * 19) - (144 / 12).",
+            "answer": 691,
+        },
+    ),
+    (
+        "arithmetic-grpo-1",
+        {
+            "question": "Use the calculator to evaluate (98765 % 97) * 13 - (444 // 7).",
+            "answer": 184,
+        },
+    ),
+    (
+        "arithmetic-grpo-2",
+        {
+            "question": "Use the calculator to evaluate ((83 * 17) - (1440 / 12)) + 29.",
+            "answer": 1320,
+        },
+    ),
+    (
+        "arithmetic-grpo-3",
+        {
+            "question": "Use the calculator to evaluate (19 * 23 + 17) / 6.",
+            "answer": 75.66666666666667,
+        },
+    ),
+)
+_MAX_SAMPLES_PER_TASK = 16
 
 
 def _wait_for(url: str, timeout: float) -> None:
@@ -51,34 +83,62 @@ async def _collect(
     gateway_url: str,
     artifacts: Path,
     model_id: str,
+    model_revision: str | None,
     harness: Path,
 ) -> tuple[list[RolloutSpec], list[RawCapture]]:
-    specs: list[RolloutSpec] = []
-    captures: list[RawCapture] = []
-    controller = LocalController(gateway_url, artifacts, model_id, timeout_seconds=180)
-    task = {
-        "question": "Use the calculator to evaluate (37 * 19) - (144 / 12).",
-        "answer": 691,
-    }
-    for index in range(8):
-        spec = RolloutSpec(rollout_id=f"gpu-smoke-{index}", task_id="arithmetic-grpo", task=task)
-        await controller.run(spec, [sys.executable, str(harness)])
-        capture_path = artifacts / f"rollout_{spec.rollout_id}.json"
-        capture = RawCapture.model_validate_json(capture_path.read_text(encoding="utf-8"))
-        compiled = compile_trajectory(capture.events, capture.result, spec.task_id)
-        if capture.result.status != "succeeded" or capture.result.reward is None:
-            continue
-        if len(compiled) != 1:
-            raise RuntimeError(f"rollout {spec.rollout_id} did not compile to exactly one row")
-        specs.append(spec)
-        captures.append(capture)
-        rewards = [item.result.reward for item in captures]
-        if len(rewards) >= 2 and len(set(rewards)) > 1:
-            return specs, captures
-    raise RuntimeError("eight samples produced no group with non-zero reward variance")
+    controller = LocalController(
+        gateway_url,
+        artifacts,
+        model_id,
+        model_revision=model_revision,
+        timeout_seconds=180,
+    )
+    for task_index, (task_id, task) in enumerate(_TASK_CANDIDATES):
+        specs: list[RolloutSpec] = []
+        captures: list[RawCapture] = []
+        for sample_index in range(_MAX_SAMPLES_PER_TASK):
+            spec = RolloutSpec(
+                rollout_id=f"gpu-smoke-{task_index}-{sample_index}",
+                task_id=task_id,
+                task=task,
+            )
+            await controller.run(spec, [sys.executable, str(harness)])
+            capture_path = artifacts / f"rollout_{spec.rollout_id}.json"
+            capture = RawCapture.model_validate_json(capture_path.read_text(encoding="utf-8"))
+            if capture.result.status != "succeeded" or capture.result.reward is None:
+                continue
+
+            compiled = compile_trajectory(capture.events, capture.result, spec.task_id)
+            if len(compiled) != 1:
+                raise RuntimeError(f"rollout {spec.rollout_id} did not compile to exactly one row")
+            row = compiled[0]
+            has_tool_turn = (
+                len(capture.events) >= 2
+                and capture.result.metrics.get("model_calls", 0) >= 2
+                and capture.result.metrics.get("tool_calls", 0) >= 1
+                and any(segment.kind == "context_delta" for segment in row.segments)
+                and 0 in row.loss_mask
+            )
+            if not has_tool_turn:
+                continue
+
+            specs.append(spec)
+            captures.append(capture)
+            rewards = {item.result.reward for item in captures}
+            if 0.0 in rewards and 1.0 in rewards:
+                return specs, captures
+
+    raise RuntimeError(
+        "workload calibration inconclusive: no candidate task produced both reward 0 and 1 "
+        f"within {_MAX_SAMPLES_PER_TASK} rollouts"
+    )
 
 
-def _optimizer_step(model_id: str, batch: Any) -> float:
+def _optimizer_step(
+    model_id: str,
+    model_revision: str | None,
+    batch: Any,
+) -> dict[str, float | str]:
     try:
         from verl.trainer.ppo.core_algos import (
             compute_grpo_outcome_advantage,
@@ -92,11 +152,31 @@ def _optimizer_step(model_id: str, batch: Any) -> float:
         response_mask=batch.batch["response_mask"],
         index=batch.non_tensor_batch["uid"],
     )
+    cpu_response_mask = batch.batch["response_mask"]
+    if not torch.isfinite(advantages).all():
+        raise RuntimeError("GRPO advantage is not finite")
+    if torch.count_nonzero(advantages[cpu_response_mask == 0]).item() != 0:
+        raise RuntimeError("GRPO advantage is non-zero on a masked response token")
+    if torch.count_nonzero(advantages[cpu_response_mask == 1]).item() == 0:
+        raise RuntimeError("GRPO advantage is zero on every trainable token")
+    trainable_advantages = advantages[cpu_response_mask == 1]
+
     actor = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=torch.float32, attn_implementation="sdpa"
+        model_id,
+        revision=model_revision,
+        torch_dtype=torch.float32,
+        attn_implementation="sdpa",
     ).cuda()
     actor.train()
     optimizer = torch.optim.AdamW(actor.parameters(), lr=1e-6)
+    probe_name, probe = min(
+        (
+            (name, parameter)
+            for name, parameter in actor.named_parameters()
+            if parameter.requires_grad
+        ),
+        key=lambda item: (item[1].numel(), item[0]),
+    )
     input_ids = batch.batch["input_ids"].cuda()
     attention_mask = batch.batch["attention_mask"].cuda()
     responses = batch.batch["responses"].cuda()
@@ -116,20 +196,65 @@ def _optimizer_step(model_id: str, batch: Any) -> float:
     )
     if not torch.isfinite(loss):
         raise RuntimeError("policy loss is not finite")
-    probe = next(parameter for parameter in actor.parameters() if parameter.requires_grad)
-    before = probe.detach().clone()
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
+
+    gradient_norms = [
+        parameter.grad.detach().norm(2)
+        for parameter in actor.parameters()
+        if parameter.grad is not None
+    ]
+    if not gradient_norms:
+        raise RuntimeError("backward produced no actor gradients")
+    gradient_norm = torch.linalg.vector_norm(torch.stack(gradient_norms)).item()
+    if not math.isfinite(gradient_norm) or gradient_norm <= 0:
+        raise RuntimeError("actor gradient norm is not finite and positive")
+
+    if probe.grad is None or torch.count_nonzero(probe.grad).item() == 0:
+        raise RuntimeError(f"fixed parameter probe {probe_name!r} has no non-zero gradient")
+    before = probe.detach().clone()
     optimizer.step()
-    changed = (probe.detach() - before).abs().max().item()
-    if not math.isfinite(changed) or changed == 0:
-        raise RuntimeError("optimizer step did not change the actor parameter checksum")
-    return float(loss.detach())
+    parameter_max_delta = (probe.detach() - before).abs().max().item()
+    if not math.isfinite(parameter_max_delta) or parameter_max_delta <= 0:
+        raise RuntimeError("optimizer step did not change the parameter probe")
+    return {
+        "loss": float(loss.detach()),
+        "advantage_min": float(trainable_advantages.min()),
+        "advantage_max": float(trainable_advantages.max()),
+        "advantage_nonzero_trainable_tokens": int(torch.count_nonzero(trainable_advantages).item()),
+        "advantage_nonzero_masked_tokens": 0,
+        "gradient_norm": gradient_norm,
+        "parameter_probe": probe_name,
+        "parameter_max_delta": parameter_max_delta,
+    }
+
+
+def _validate_batch(batch: Any, rows: list[TrainingRow]) -> dict[str, Any]:
+    group_ids = batch.non_tensor_batch["uid"].tolist()
+    expected_group = rows[0].task_id
+    if not group_ids or any(group_id != expected_group for group_id in group_ids):
+        raise RuntimeError("VERL uid values do not form one task_id group")
+
+    response_mask = batch.batch["response_mask"]
+    response_width = response_mask.shape[1]
+    for index, row in enumerate(rows):
+        expected_mask = row.loss_mask + [0] * (response_width - len(row.loss_mask))
+        if response_mask[index].tolist() != expected_mask:
+            raise RuntimeError(f"VERL response_mask disagrees with row {row.rollout_id!r}")
+
+    keys = ("prompts", "responses", "input_ids", "attention_mask", "response_mask")
+    return {
+        "task_id": expected_group,
+        "batch_shapes": {key: list(batch.batch[key].shape) for key in keys},
+        "trainable_tokens": int(response_mask.sum().item()),
+        "masked_response_tokens": int((response_mask == 0).sum().item()),
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--revision")
     parser.add_argument("--artifacts", type=Path, default=Path("artifacts/gpu-smoke"))
     parser.add_argument("--vllm-port", type=int, default=8100)
     parser.add_argument("--gateway-port", type=int, default=8101)
@@ -140,20 +265,23 @@ def main() -> None:
     args.artifacts.mkdir(parents=True, exist_ok=True)
     root = Path(__file__).resolve().parents[2]
     harness = root / "examples/openai_tool_agent/run.py"
-    vllm = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "vllm.entrypoints.openai.api_server",
-            "--model",
-            args.model,
-            "--port",
-            str(args.vllm_port),
-            "--gpu-memory-utilization",
-            "0.45",
-        ],
-        start_new_session=True,
-    )
+    vllm_command = [
+        sys.executable,
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        args.model,
+        "--port",
+        str(args.vllm_port),
+        "--gpu-memory-utilization",
+        "0.45",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser",
+        "hermes",
+    ]
+    if args.revision is not None:
+        vllm_command.extend(("--revision", args.revision))
+    vllm = subprocess.Popen(vllm_command, start_new_session=True)
     gateway: subprocess.Popen[bytes] | None = None
     try:
         _wait_for(f"http://127.0.0.1:{args.vllm_port}/health", 300)
@@ -173,7 +301,9 @@ def main() -> None:
         )
         gateway_url = f"http://127.0.0.1:{args.gateway_port}"
         _wait_for(f"{gateway_url}/health", 60)
-        specs, captures = asyncio.run(_collect(gateway_url, args.artifacts, args.model, harness))
+        specs, captures = asyncio.run(
+            _collect(gateway_url, args.artifacts, args.model, args.revision, harness)
+        )
     finally:
         if gateway is not None:
             _stop(gateway)
@@ -183,7 +313,7 @@ def main() -> None:
         compile_trajectory(capture.events, capture.result, capture.spec.task_id)[0]
         for capture in captures
     ]
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=args.revision)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     pad_token_id = tokenizer.pad_token_id
@@ -197,12 +327,16 @@ def main() -> None:
         max_prompt_length=2048,
         max_response_length=2048,
     )
-    loss = _optimizer_step(args.model, batch)
+    batch_summary = _validate_batch(batch, rows)
+    optimization_summary = _optimizer_step(args.model, args.revision, batch)
     summary = {
+        "model": args.model,
+        "model_revision": args.revision,
         "batch_size": len(captures),
-        "loss": loss,
         "rewards": [capture.result.reward for capture in captures],
         "artifacts": str(args.artifacts.resolve()),
+        **batch_summary,
+        **optimization_summary,
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
 

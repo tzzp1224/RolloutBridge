@@ -91,9 +91,7 @@ controller = LocalController(
     "artifacts",
     "Qwen/Qwen2.5-0.5B-Instruct",
 )
-result = asyncio.run(
-    controller.run(spec, [sys.executable, "examples/openai_tool_agent/run.py"])
-)
+result = asyncio.run(controller.run(spec, [sys.executable, "examples/openai_tool_agent/run.py"]))
 ```
 
 The Controller writes `task.json` and injects exactly five harness-facing variables:
@@ -134,16 +132,18 @@ a new row instead of guessing an alignment.
 On a Linux host with NVIDIA CUDA:
 
 ```bash
-uv sync --extra examples --extra train
-uv run python examples/grpo_smoke/train.py
+uv sync --frozen --extra examples --extra train
+uv run python examples/grpo_smoke/train.py \
+  --revision YOUR_HF_COMMIT_SHA
 ```
 
-The script launches a small Qwen vLLM server and the same Gateway, then samples a single
-`task_id` at most eight times. It proceeds only after observing non-zero reward variance. It
-constructs a real VERL `DataProto`, calls VERL 0.8.0's GRPO advantage and PPO policy-loss
-functions, loads the same Hugging Face actor, and performs a real backward/AdamW step. Finite
-loss and a changed parameter checksum are required; all `RawCapture` files and a JSON terminal
-summary are retained.
+The script launches a small Qwen vLLM server with Hermes tool parsing and the same Gateway. It
+tries four fixed arithmetic tasks independently, sampling each `task_id` at most sixteen times,
+and stops at the first group with both zero and one rewards. It constructs a real VERL
+`DataProto`, calls VERL 0.8.0's GRPO advantage and PPO policy-loss functions, loads the same
+Hugging Face actor revision, and performs a real backward/AdamW step. Finite loss, a positive
+gradient norm, and a changed parameter probe are required; all `RawCapture` files and a JSON
+terminal summary are retained.
 
 ## Explicit boundaries
 

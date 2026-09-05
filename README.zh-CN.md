@@ -125,14 +125,16 @@ rows = compile_trajectory(capture.events, capture.result, capture.spec.task_id)
 在装有 NVIDIA CUDA 的 Linux 主机运行：
 
 ```bash
-uv sync --extra examples --extra train
-uv run python examples/grpo_smoke/train.py
+uv sync --frozen --extra examples --extra train
+uv run python examples/grpo_smoke/train.py \
+  --revision YOUR_HF_COMMIT_SHA
 ```
 
-脚本启动小型 Qwen vLLM 和同一个 Gateway，对同一 `task_id` 最多采样 8 次。只有得到非零
-reward 方差才继续；随后构造真实 `DataProto`，调用 VERL 0.8.0 的 GRPO advantage 与 PPO
-policy-loss，加载同一 Hugging Face actor 并执行一次真实 backward/AdamW step。它断言 loss
-有限、参数 checksum 改变，并保留所有 `RawCapture` 与 JSON 终端摘要。
+脚本用 Hermes tool parser 启动小型 Qwen vLLM 和同一个 Gateway，依次尝试四个固定算术任务，
+每个 `task_id` 最多采样 16 次，并在第一个同时出现 0/1 reward 的 group 上停止。随后构造真实
+`DataProto`，调用 VERL 0.8.0 的 GRPO advantage 与 PPO policy-loss，加载同一 Hugging Face
+actor revision 并执行一次真实 backward/AdamW step。它断言 loss 有限、gradient norm 为正且
+参数 probe 确实改变，并保留所有 `RawCapture` 与 JSON 终端摘要。
 
 ## 明确边界
 
