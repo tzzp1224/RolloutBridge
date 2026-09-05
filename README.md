@@ -4,14 +4,14 @@ English | [简体中文](README.zh-CN.md)
 
 ```mermaid
 flowchart LR
-    C[LocalController<br/>owns process + result] -->|five RB_* vars| H[Agent harness<br/>owns agent loop]
-    H -->|Chat Completions| G[Exact-token Gateway<br/>owns capture ordering]
-    G -->|forced model + token IDs| V[vLLM-compatible server]
-    G -->|ModelCallEvent[]| C
-    C -->|stable RawCapture| A[(artifacts/)]
-    A --> P[pure compiler<br/>owns prefix semantics]
-    P --> R[TrainingRow]
-    R --> D[thin VERL adapter<br/>owns padding + join]
+    C["LocalController<br/>owns process and result"] -->|"five environment variables"| H["Agent harness<br/>owns agent loop"]
+    H -->|"Chat Completions"| G["Exact-token Gateway<br/>owns capture ordering"]
+    G -->|"forced model and token IDs"| V["vLLM-compatible server"]
+    G -->|"captured model-call events"| C
+    C -->|"stable RawCapture"| A[("artifacts")]
+    A --> P["pure compiler<br/>owns prefix semantics"]
+    P --> R["TrainingRow"]
+    R --> D["thin VERL adapter<br/>owns padding and join"]
 ```
 
 RolloutBridge is a small Python 3.12 bridge from agent rollouts to VERL training batches.

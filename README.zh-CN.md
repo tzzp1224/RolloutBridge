@@ -4,14 +4,14 @@
 
 ```mermaid
 flowchart LR
-    C[LocalController<br/>owns process + result] -->|five RB_* vars| H[Agent harness<br/>owns agent loop]
-    H -->|Chat Completions| G[Exact-token Gateway<br/>owns capture ordering]
-    G -->|forced model + token IDs| V[vLLM-compatible server]
-    G -->|ModelCallEvent[]| C
-    C -->|stable RawCapture| A[(artifacts/)]
-    A --> P[pure compiler<br/>owns prefix semantics]
-    P --> R[TrainingRow]
-    R --> D[thin VERL adapter<br/>owns padding + join]
+    C["LocalController<br/>负责进程与结果"] -->|"五个环境变量"| H["Agent harness<br/>负责 agent loop"]
+    H -->|"Chat Completions"| G["Exact-token Gateway<br/>负责捕获顺序"]
+    G -->|"强制模型与 token IDs"| V["vLLM-compatible server"]
+    G -->|"捕获模型调用事件"| C
+    C -->|"稳定 RawCapture"| A[("artifacts")]
+    A --> P["纯 compiler<br/>负责 prefix 语义"]
+    P --> R["TrainingRow"]
+    R --> D["轻量 VERL adapter<br/>负责 padding 与关联"]
 ```
 
 RolloutBridge 的核心主张是明确 ownership：agent loop 属于 harness，serving-time token
